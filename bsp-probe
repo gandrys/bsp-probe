@@ -1,0 +1,323 @@
+#!/bin/bash 
+#====================================================================
+# NAME      :   bsp-probe
+# AUTHOR    :   Andrys Jiri
+# DATE      :   2018.12.18
+VERSION='0.1'
+#
+# DEPENDENCIES :
+#               bash, grep, awk, mkdir, find, sort, pwd,
+#               bitbake-layers, git, printf, bitbake, cat, sed, mktemp
+#               Any path must not include SPACES !
+# 
+#====================================================================
+
+
+get-local-config() {
+    local _localconfiglog=$1
+
+    #old bitbake/kernels should have this
+    bwdir=$(bitbake virtual/kernel -e | grep ^BASE_WORKDIR=)
+    bwdir="${bwdir#*=}"
+    lconfig="${bwdir//\"}/../../conf/local.conf"
+
+    if [ -e "${lconfig}" ]; then
+        echo -e "\n\n{YOCTO_CONFIGURATION:[local.conf]" >>${_localconfiglog}
+        cat "${lconfig}" >>${_localconfiglog}
+        echo -e "}YOCTO_CONFIGURATION:[local.conf]\n" >>${_localconfiglog}
+        echo -e "  >OK"
+    else
+        echo -e "\n    ERROR: Unable to find local.conf: -${lconfig}- . Exiting"
+        return 1;
+    fi
+}
+
+
+get-kernel-config() {
+    local _kernelconfiglog=$1
+
+    #old bitbake/kernels should have this
+    wdir=$(bitbake virtual/kernel -e | grep ^WORKDIR=)
+    wdir="${wdir#*=}"
+    ykconfig="${wdir//\"}/build/.config"
+
+    if [ -e "${ykconfig}" ]; then
+        echo -e "\n\n{KERNEL_CONFIGURATION:[.config]" >>${_kernelconfiglog}
+        cat "${ykconfig}" >>${_kernelconfiglog}
+        echo -e "}KERNEL_CONFIGURATION:[.config]\n" >>${_kernelconfiglog}
+        echo -e "  >OK"
+    else
+        echo -e "\n    ERROR: Unable to find kernel configuration: -${ykconfig}- . Exiting"
+        return 1;
+    fi
+
+    #new bitbake/kernels should have this
+    #stagkerdir=$(bitbake virtual/kernel -e | grep ^STAGING_KERNEL_BUILDDIR=)
+#
+#WORKDIR="/opt/alcz11702218/works/fslbsp/build/tmp/work/imx8qxp_kamuro-poky-linux/linux-imx/4.9.51-r5"
+#/build/.config
+#or
+#STAGING_KERNEL_BUILDDIR="/opt/alcz11702218/works/fslbsp/build/tmp/work-shared/imx8qxp-kamuro/kernel-build-artifacts"
+#.config
+
+}
+
+
+file-hashes () {
+    local _gitdatadir=$1
+    local _base_searchpath=$2
+    local _filehasheslog=$3
+
+    
+    git_links_list=( $(find -H "${_gitdatadir}" -type l -not -path "*/.git/*" ) )
+    git_all_flist=( $(find -H "${_gitdatadir}" -type f -not -path "*/.git/*") ${git_links_list[@]} )
+    git_all_slist=( $(printf '%s\n' ${git_all_flist[@]} | sort) )
+    
+    echo -e "  >${_gitdatadir}"
+    echo -e "  {FILE_HASHES :" >>"${_filehasheslog}"
+    for fle in ${git_all_slist[@]}; do
+        link=0
+        for lnkfle in ${git_links_list[@]}; do 
+            if [ "${fle}" == "${lnkfle}" ]; then
+                link=1
+                break;
+            fi
+        done
+        
+        if [ ${link} -eq 1 ]; then
+            sha1=$(echo -n $(readlink "${fle}") | git hash-object --stdin)
+        else
+            sha1=$(git hash-object "${fle}")
+        fi
+
+        spath="${fle#"${_base_searchpath}/"}"
+        echo -e "${sha1}, ${spath}" >>"${_filehasheslog}"
+        
+        #fls_list_path+=( "${fle}" )
+        #fls_list_sha1+=( "${sha1}" )
+    done
+    echo -e "}FILE_HASHES :" >>"${_filehasheslog}"
+
+    echo -e "">>"${_filehasheslog}"
+
+}
+
+
+
+git-probe() {
+    local _git_search_dir=$1
+    local _logfle=$2
+    local _get_branches=$3
+    local _get_fullcheck=$4
+
+    git_dir_list=( $(find -L "${_git_search_dir}" -type d -path "*.git" | sort ) )
+
+    echo -e "GIT PROBE:\n" >>"${_logfle}"
+    #TODO: fetched git does not include branches etc ..
+    #      bellow mention method does not provide reliable result..
+
+    if [ "${_get_branches}" == "yes" ]; then
+        git config --global credential.helper 'cache --timeout 43200'
+    fi
+
+    if [ "${_get_fullcheck}" == "yes" ]; then
+      echo -e "  FILE-HASHES:"
+    fi
+    
+    for gitdir in ${git_dir_list[@]}; do
+        #tmp0="${gitdir%/*}"; tmp1=( ${tmp0//// } );tmp2=${tmp1[@]: -4};  tmp3=$(printf "%s/" ${tmp2[@]});
+        #tmp0="${gitdir%/*}"; tmp1=( ${tmp0//// } );
+        #gitrootdir=${tmp1[@]: -1};
+        sgitdir="${gitdir%/*}";sgitdir="<LAYERS_DIR>/${gitdir//"${_git_search_dir}/"}"
+        giturl=$(git --git-dir="${gitdir}" remote -v | awk 'NR==1{ print $2 }')
+        commit_hash=$(git --git-dir="${gitdir}" show --format="%H" --no-patch)
+        commit_date=$(git --git-dir="${gitdir}" show --format="%cI" --no-patch)
+        tag_name=$(git --git-dir="${gitdir}" describe --tags --exact-match 2>/dev/null)
+
+        if [ "${_get_branches}" == "yes" ]; then
+            _TMPDIR=$(mktemp -d)
+            branch_name=$( cd ${_TMPDIR}; git clone ${giturl}; bla="${giturl##*/}"; cd "${bla%%.git*}" ; bla=$(git name-rev --name-only "${commit_hash}"); echo "${bla##*/}"  )
+            # git name-rev --name-only
+            printf '%s\n  %s\n  %s\n  %s\n  %s\n  %s\n\n' "GITDIR   :${sgitdir%/*}" "URL    :${giturl}" "Branch:${branch_name}" "TAG    :${tag_name}" "HASH   :${commit_hash}" "DATE   :${commit_date}" >>"${_logfle}"
+            rm -rf "${_TMPDIR}"
+        else
+            if [ "${_get_fullcheck}" == "yes" ]; then
+                printf '%s\n  %s\n  %s\n  %s\n  %s\n' "GITDIR :${sgitdir%/*}" "URL  :${giturl}" "TAG  :${tag_name}" "HASH :${commit_hash}" "DATE :${commit_date}" >>"${_logfle}"
+            else
+                printf '%s\n  %s\n  %s\n  %s\n  %s\n\n' "GITDIR :${sgitdir%/*}" "URL  :${giturl}" "TAG  :${tag_name}" "HASH :${commit_hash}" "DATE :${commit_date}" >>"${_logfle}"
+            fi
+        fi
+
+        if [ "${_get_fullcheck}" == "yes" ]; then
+            file-hashes "${gitdir%/*}" "${_git_search_dir}" "${_logfle}"
+        fi
+
+    done
+
+#reliable but slow:
+#git clone --base URL
+#cd "${giturl##*/}"
+#git config --bool core.bare false
+#mv "${giturl##*/}" .git
+#git reset --hard
+#it branch  --contains {HASH}
+
+    echo -e "\n">>"${_logfle}"
+
+}
+
+
+dependencies_test() {
+  #format: all commands here are in format "CMDNAME SOME_PARAMETERS RETURN_VALUE"
+
+   for cmd in "${DEPENDENCIES_LIST[@]}"; do 
+    #
+    sub_cmd_arr=( ${cmd} )
+    lst="${#sub_cmd_arr[@]}"
+    sub_cmd="${sub_cmd_arr[@]:0:lst-1}"
+    cmd_only=${sub_cmd_arr[0]}
+    exp_retval="${sub_cmd_arr[@]: -1}"
+    #
+    
+    retval=$( ${sub_cmd} &>/dev/null)
+    retval=$?
+    if [ "${retval}" != "${exp_retval}" ] && [ "${retval}" != "0" ]; then
+      echo -e "  Error: Dependencies test fail !"
+      echo -e '         "'$sub_cmd'" command should return 0 or "'$exp_retval'"'"\n         but returned value is "'"'$retval'"!' 
+      return 1
+    fi
+   done
+
+  return 0
+}
+
+
+help_desc() {
+echo -e "\
+  Usage:  bsp-probe OPTIONS
+
+  Probe BSP on base of yocto project(OE, bitbake) and create bsp-probe.log
+  The bsp-probe.log includes:
+    - list of yocto layers
+    - yocto layers revisions
+    - git hashes of all source files 
+    - local.conf
+    - kernel configuration
+  
+  Command have to be executed in environment where bitbake command is available
+  and
+  after all layers have been added to bblayers.conf
+  and
+  configuration in local.conf for given build is in final state 
+  and
+  build of image file have finished.
+
+  OPTION: { --version }
+  |  > Version information
+  |
+
+  OPTION: { --get-branches | -b }
+  |  > Add info about branches. Unreliable results.
+  |
+"
+}
+
+#bitbake -s 0 ensure that we are in correct directory to get data from bitbake
+DEPENDENCIES_LIST=( "grep --help 0" "awk --help 0" "mkdir --help 0" "git --version 0" "find --help 0" "bitbake -s 0" \
+                    "sort --help 0" "pwd -L 0" "bitbake-layers --help 0"  "printf bla 0" "sed --help 0" "mktemp --help 0")
+
+main() {
+
+    echo -e "\nBSP-PROBE:"
+
+    GET_BRANCHES="no"
+    FULL_CHECK="yes"
+    
+    for arg in "$@"; do
+
+        case "$arg" in
+
+          help|--help|-h|\?)
+            help_desc
+            exit 0;
+          ;;
+
+          --version)
+            echo -e "Version: ${VERSION}"
+            exit 0;
+          ;;
+
+          --get-branches|-b)
+              GET_BRANCHES="yes"
+          ;;
+
+          --full-check|-f)
+              FULL_CHECK="yes"
+          ;;
+
+        esac
+    done
+
+    
+    
+    CURWD=$(pwd)
+    
+    #Get-real bash path: only one link level redirection
+    if [ -L "$0" ]; then
+        move2link=$(dirname "$0")
+        resolv_link=$(readlink "$0")    
+        BASHFILEDIR=$(cd "${move2link}"; cd -P $( dirname ${resolv_link} ) && pwd )
+    else
+        BASHFILEDIR=$(dirname "$0")
+    fi
+    
+    echo -e "  DEPENDENCY-TEST:"
+    dependencies_test
+    ret=$?
+    if [ "${ret}" != "0" ]; then  
+      exit 1
+    else
+      echo -e "  >OK" 
+    fi
+    
+    #TODO:Static path is enough, because of we are using mostly NXP based BSPs.This may not be functional in general for OE/Yocto BSPs. 
+    SEARCH_ROOT_DIR="$(cd "${BASHFILEDIR}/../.."; pwd -P)"
+    
+    
+    BSP_PROBE_LOG="${CURWD}/bsp-probe.log"
+
+    if [ "${BASHFILEDIR##*/}" != "tools" ]; then
+      echo -e "\n  ERROR: Wrong script dir   !.Exiting \n"
+      exit 1
+    fi
+
+    if [ ! -e "${SEARCH_ROOT_DIR}/poky/bitbake" ]; then
+        echo -e "\n  ERROR: Different BSP Structure:  SEARCH_ROOT_DIR:-${SEARCH_ROOT_DIR}- ! Exiting \n"
+        exit 1
+    fi
+
+    CUR_TIME=$(date +%Y-%m-%d,%H:%M:%S)
+    echo -e "BSP-PROBE[${CUR_TIME}]:\nSEARCH_ROOT_DIR: ${SEARCH_ROOT_DIR}\n" >"${BSP_PROBE_LOG}"
+    echo -e "APPLIED LAYERS: ">>"${BSP_PROBE_LOG}"
+
+    bitbake-layers show-layers | sed "s#${SEARCH_ROOT_DIR}/##g" >>"${BSP_PROBE_LOG}"
+    ret_=$?
+    if [ ! "${ret_}" -eq 0 ]; then
+        echo -e "\n  ERROR: Command should be run from the same place as bitbake command ! Exiting \n"
+        exit 1
+    fi
+    echo -e "\n" >>"${BSP_PROBE_LOG}"
+
+    git-probe "${SEARCH_ROOT_DIR}" "${BSP_PROBE_LOG}" "${GET_BRANCHES}" "${FULL_CHECK}"
+
+    echo -e "  KERNEL-CONFIG:"
+    get-kernel-config "${BSP_PROBE_LOG}"
+
+    echo -e "  LOCAL-CONFIG:"
+    get-local-config "${BSP_PROBE_LOG}"
+
+    echo -e "\n"
+}
+
+
+main "$@"
