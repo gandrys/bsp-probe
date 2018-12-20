@@ -2,15 +2,16 @@
 #====================================================================
 # NAME      :   bsp-probe
 # AUTHOR    :   Andrys Jiri
-# DATE      :   2018.12.18
-VERSION='0.1'
+# DATE      :   2018.12.20
+VERSION='0.2'
 #
 # DEPENDENCIES :
-#               bash, grep, awk, mkdir, find, sort, pwd,
+#               bash, grep, awk, mkdir, find, sort, pwd, sha1sum,
 #               bitbake-layers, git, printf, bitbake, cat, sed, mktemp
 #               Any path must not include SPACES !
 # 
 #====================================================================
+
 
 
 get-local-config() {
@@ -31,6 +32,7 @@ get-local-config() {
         return 1;
     fi
 }
+
 
 
 get-kernel-config() {
@@ -63,6 +65,7 @@ get-kernel-config() {
 }
 
 
+
 file-hashes () {
     local _gitdatadir=$1
     local _base_searchpath=$2
@@ -74,7 +77,7 @@ file-hashes () {
     git_all_slist=( $(printf '%s\n' ${git_all_flist[@]} | sort) )
     
     echo -e "  >${_gitdatadir}"
-    echo -e "  {FILE_HASHES :" >>"${_filehasheslog}"
+    echo -e "  {GIT_FILES_HASH:" >>"${_filehasheslog}"
     for fle in ${git_all_slist[@]}; do
         link=0
         for lnkfle in ${git_links_list[@]}; do 
@@ -96,7 +99,7 @@ file-hashes () {
         #fls_list_path+=( "${fle}" )
         #fls_list_sha1+=( "${sha1}" )
     done
-    echo -e "}FILE_HASHES :" >>"${_filehasheslog}"
+    echo -e "}GIT_FILES_HASH" >>"${_filehasheslog}"
 
     echo -e "">>"${_filehasheslog}"
 
@@ -112,7 +115,7 @@ git-probe() {
 
     git_dir_list=( $(find -L "${_git_search_dir}" -type d -path "*.git" | sort ) )
 
-    echo -e "GIT PROBE:\n" >>"${_logfle}"
+    echo -e "\n" >>"${_logfle}"
     #TODO: fetched git does not include branches etc ..
     #      bellow mention method does not provide reliable result..
 
@@ -121,7 +124,7 @@ git-probe() {
     fi
 
     if [ "${_get_fullcheck}" == "yes" ]; then
-      echo -e "  FILE-HASHES:"
+      echo -e "  GIT-FILES-HASH:"
     fi
     
     for gitdir in ${git_dir_list[@]}; do
@@ -167,6 +170,41 @@ git-probe() {
 }
 
 
+
+repo-probe() {
+    local _repo_git_dir=$1
+    local _logfle=$2
+
+    echo -e "\n" >>"${_logfle}"
+    
+    manfle="${_repo_git_dir%%"/manifests/.git"*}/manifest.xml"
+    if [ ! -e "${manfle}" ]; then
+        echo -e "ERROR: Unable to find manifest.xml ! Exiting"
+        return 6;
+    fi
+    
+    manname=$(readlink ${manfle})
+    manname=${manname##*/}
+    sha1sum=( $(sha1sum ${manfle}) )
+    sha1sum=${sha1sum[0]}
+    
+    giturl=$(git --git-dir="${_repo_git_dir}" remote -v | awk 'NR==1{ print $2 }')
+    commit_hash=$(git --git-dir="${_repo_git_dir}" show --format="%H" --no-patch)
+    if [ ! $? -eq "0" ]; then
+        echo -e "ERROR: Unable to get hash from git ! Exiting"
+        return 7;
+    fi    
+    commit_date=$(git --git-dir="${_repo_git_dir}" show --format="%cI" --no-patch)
+    tag_name=$(git --git-dir="${_repo_git_dir}" describe --tags --exact-match 2>/dev/null)
+
+    printf '%s\n  %s\n  %s\n  %s\n  %s\n  %s\n' "MANIFEST-NAME :${manname}" "SHA1-SUM    :${sha1sum}" "URL         :${giturl}" "TAG         :${tag_name}" "COMIT-HASH  :${commit_hash}" "DATE        :${commit_date}" >>"${_logfle}"
+
+    echo -e "  >OK"
+    
+}
+
+
+
 dependencies_test() {
   #format: all commands here are in format "CMDNAME SOME_PARAMETERS RETURN_VALUE"
 
@@ -192,12 +230,14 @@ dependencies_test() {
 }
 
 
+
 help_desc() {
 echo -e "\
   Usage:  bsp-probe OPTIONS
 
   Probe BSP on base of yocto project(OE, bitbake) and create bsp-probe.log
   The bsp-probe.log includes:
+    - repo url, hash, tag, name of manifest.xml + hash
     - list of yocto layers
     - yocto layers revisions
     - git hashes of all source files 
@@ -222,9 +262,11 @@ echo -e "\
 "
 }
 
+
+
 #bitbake -s 0 ensure that we are in correct directory to get data from bitbake
 DEPENDENCIES_LIST=( "grep --help 0" "awk --help 0" "mkdir --help 0" "git --version 0" "find --help 0" "bitbake -s 0" \
-                    "sort --help 0" "pwd -L 0" "bitbake-layers --help 0"  "printf bla 0" "sed --help 0" "mktemp --help 0")
+                    "sort --help 0" "pwd -L 0" "bitbake-layers --help 0"  "printf bla 0" "sed --help 0" "mktemp --help 0" "sha1sum --help 0")
 
 main() {
 
@@ -282,12 +324,35 @@ main() {
     
     #TODO:Static path is enough, because of we are using mostly NXP based BSPs.This may not be functional in general for OE/Yocto BSPs. 
     SEARCH_ROOT_DIR="$(cd "${BASHFILEDIR}/../.."; pwd -P)"
+    if [ ! $? -eq "0" ]; then 
+        echo -e "\n  ERROR: Unable enter yocto layers directory ! Exiting \n"
+        exit 1        
+    fi
+    
+    #REPO_GIT_DIR
+    if [ -e "${SEARCH_ROOT_DIR}/../.repo/manifests/.git" ]; then
+        #nxp
+        REPO_GIT_DIR="${SEARCH_ROOT_DIR}/../.repo/manifests/.git"
+    elif [ -e "${SEARCH_ROOT_DIR}/.repo/manifest/.git" ]; then
+       #agl and rest
+        REPO_GIT_DIR="${SEARCH_ROOT_DIR}/.repo/manifests/.git"
+    else
+        echo -e "\n  ERROR: Unable to find .repo directory ! Exiting \n"
+        exit 1
+    fi
+    
+    #access check
+    REPO_GIT_DIR="$(cd "${REPO_GIT_DIR}"; pwd -P)"
+    if [ ! $? -eq "0" ]; then 
+        echo -e "\n  ERROR: Unable enter .repo directory ! Exiting \n"
+        exit 1        
+    fi    
     
     
     BSP_PROBE_LOG="${CURWD}/bsp-probe.log"
 
     if [ "${BASHFILEDIR##*/}" != "tools" ]; then
-      echo -e "\n  ERROR: Wrong script dir   !.Exiting \n"
+      echo -e "\n  ERROR: Wrong script dir ! Exiting \n"
       exit 1
     fi
 
@@ -297,7 +362,11 @@ main() {
     fi
 
     CUR_TIME=$(date +%Y-%m-%d,%H:%M:%S)
-    echo -e "BSP-PROBE[${CUR_TIME}]:\nSEARCH_ROOT_DIR: ${SEARCH_ROOT_DIR}\n" >"${BSP_PROBE_LOG}"
+    echo -e "BSP-PROBE[${CUR_TIME}]:" >"${BSP_PROBE_LOG}"
+    echo -e "SEARCH_ROOT_DIR: ${SEARCH_ROOT_DIR}" >>"${BSP_PROBE_LOG}"
+    echo -e "REPO_GIT_DIR: ${REPO_GIT_DIR%%"/manifests/.git"*}\n" >>"${BSP_PROBE_LOG}"
+    
+    
     echo -e "APPLIED LAYERS: ">>"${BSP_PROBE_LOG}"
 
     bitbake-layers show-layers | sed "s#${SEARCH_ROOT_DIR}/##g" >>"${BSP_PROBE_LOG}"
@@ -307,6 +376,9 @@ main() {
         exit 1
     fi
     echo -e "\n" >>"${BSP_PROBE_LOG}"
+
+    echo -e "  REPO-PROBE:"
+    repo-probe "${REPO_GIT_DIR}" "${BSP_PROBE_LOG}"
 
     git-probe "${SEARCH_ROOT_DIR}" "${BSP_PROBE_LOG}" "${GET_BRANCHES}" "${FULL_CHECK}"
 

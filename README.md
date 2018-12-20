@@ -1,5 +1,5 @@
 
-# *bsp-probe [Andrys Jiri, 2018.12.18, v0.1 ]*  
+# *bsp-probe [Andrys Jiri, 2018.12.20, v0.2 ]*  
 
  Author        : Jiri Andrys  
  Maintainer    : Jiri Andrys  
@@ -19,6 +19,7 @@
 The `bsp-probe` is collecting information from BSP and storing to **bsp-probe.log**.  
 Till now only NXP based BSPs are supported. 
 The bsp-probe.log includes:
+    - repo url, hash, tag, name of manifest.xml + hash
     - list of yocto layers
     - yocto layers revisions
     - git hashes of all source files 
