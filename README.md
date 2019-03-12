@@ -1,5 +1,5 @@
 
-# *bsp-probe [Andrys Jiri, 2018.12.20, v0.2 ]*  
+# *bsp-probe [Andrys Jiri, 2019.03.08, v0.3 ]*  
 
  Author        : Jiri Andrys  
  Maintainer    : Jiri Andrys  
@@ -17,35 +17,41 @@
 
 # 2. Overview
 The `bsp-probe` is collecting information from BSP and storing to **bsp-probe.log**.  
-Till now only NXP based BSPs are supported. 
-The bsp-probe.log includes:
-    - repo url, hash, tag, name of manifest.xml + hash
-    - list of yocto layers
-    - yocto layers revisions
-    - git hashes of all source files 
-    - local.conf
-    - kernel configuration
+Till now only NXP based BSPs are supported.   
+The bsp-probe.log includes:   
+    - repo url, hash, tag, name of manifest.xml + hash    
+    - list of yocto layers    
+    - yocto layers revisions    
+    - git hashes(sha1) of all source files     
+    - local.conf    
+    - kernel configuration   
 
 Sometimes publicly accessible BSP is used by others to develop software and 
 assembly of BSP(manifest.xml) can not include related software.
 
-Usually people and teams whose developing applications software differs from team which is
+Usually people and teams whose developing applications software differs from teams which are
 responsible for platform development.
 In case that there is light bond in release chain, separation can speed up development process.
 Once application team stabilize release, then it can be added to BSP.
 Middle stages could be tightened by this tool as assembly information stored by this tool. 
+Other case is when teams accross countries need to test different parts of product on base of same environment,
+again this tool can collect information about assembly and bsp-probe.log can be shared easilly. 
 
 The **repo info** command prints basic information about layers provided by manifest.xml.
 Once we have at least one layer out of manifest.xml we can not use repo info command.
 
+We can use **bitbake-layers show-layers** or just parse local.conf in order to get current 
+active layers, unfortunatelly this command can not give us versions.
+
 Bsp-probe has been tested on following systems:  
 
- * Ubuntu 14.04(64bit)
- * Ubuntu 16.04(64bit with docker) 
- * Fedora 24(64bit)  
+ * Ubuntu 14.04(64bit, docker)
+ * Ubuntu 16.04(64bit, docker) 
+ * Fedora 24(64bit, docker)  
 
-Together with **git-striper** is **bsp-probe** used for releasing requests.
+Together with **git-stripper** is **bsp-probe** used for releasing requests.
 
+The best way is to store bsp-probe to base BSP assembly.  
 
 # 3. Getting Started 
 
@@ -66,7 +72,7 @@ bitbake command is available
 **and**    
 after all layers have been added to bblayers.conf  
 **and**    
-configuration in local.conf for given build is in final state   
+configuration in local.conf for build is in final state   
 **and**  
 build of image file have finished.
 

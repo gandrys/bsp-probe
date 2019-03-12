@@ -2,8 +2,8 @@
 #====================================================================
 # NAME      :   bsp-probe
 # AUTHOR    :   Andrys Jiri
-# DATE      :   2018.12.20
-VERSION='0.2'
+# DATE      :   2019.03.08
+VERSION='0.3'
 #
 # DEPENDENCIES :
 #               bash, grep, awk, mkdir, find, sort, pwd, sha1sum,
@@ -12,6 +12,83 @@ VERSION='0.2'
 # 
 #====================================================================
 
+#have to be fullpath in both parameters
+issubdir() {
+    local _parentdir=$1
+    local _subdir=$2
+    #parentdir=/a/b/c
+    #subdirdir=/a/b/c/d/e 
+    _cutcommon=${_subdir/$_parentdir}
+    
+    if [ "${_cutcommon}" == "${_subdir}" ]; then
+        #its not subdir ...unable to cut 
+        return 1 
+    else
+        #is subdir -> ok
+        #echo "  >Found" 
+        return 0 
+    fi
+       
+}
+
+#1)existuje-layer-mimo-manifest-bez-git-repozitare??
+#2)existuje-aktivni-layer--bez-git-repozitare ??
+#does-layers-out-of-manifest-includes-git-folder ?
+
+#return 0 if ok
+#return !0 of not found
+#custom is to not insert layer inside other layer ...only in this condition check is OK ! 
+#TODO: This can be unreliable, reimplement later on ..check git and its objects ....
+
+are-aktive-layers-part-of-git-dirs() {
+    #check if active layers are included in git repositories if not -> error,
+    # error -> manually added layers without .git must not be ever added 
+
+    local _git_search_dir=$1
+    local _logfle=$2
+    
+    echo -e "\n" >>"${_logfle}"
+    
+    echo -e "LAYERS-GIT-INCLUDE-CHECK:" >>"${_logfle}"
+    
+    _tmp=( $(find -L "${_git_search_dir}" -type d -path "*.git" | sort ) )
+    #abs paths
+    _git_dir_list=( ${_tmp[@]%*/.git} )
+    #abs paths
+    _active_layers_paths=$(bitbake-layers show-layers| awk 'FNR>2{print $2}' )
+
+    for laydir in ${_active_layers_paths[@]}; do
+        #is in git repo ? > no >error quit
+        
+        #echo "Laydir:$laydir" 
+        found=0;
+        for gitdir in ${_git_dir_list[@]}; do
+        #found -> continue
+            #echo "  >gitdir:$gitdir" 
+            issubdir "${gitdir}"  "${laydir}"   
+            if [ $? -eq 0 ]; then
+                found=1;
+                #one layer found in git 
+                break;
+            fi
+        done
+        
+        if [ "${found}" -eq 0 ]; then
+            #not found -> error
+            echo -e ">ERROR: The ${laydir} is not part of any git repository."                                                     >>"${_logfle}"
+            echo -e "        This may mean that BSP assembly includes external layers(out ouf manifest assembly) without .git ."    >>"${_logfle}"
+            echo -e "        Nobody is able to identify final assembly."                                                           >>"${_logfle}"
+            echo -e "        Please add yocto-layers together with .git "                                                          >>"${_logfle}"
+            return 1;
+        fi
+        
+    done
+
+    #ok all layers are some part of git repository folder
+    echo -e ">OK\n\n"                                                                                                              >>"${_logfle}"
+    return 0;
+
+}
 
 
 get-local-config() {
@@ -56,10 +133,10 @@ get-kernel-config() {
     #new bitbake/kernels should have this
     #stagkerdir=$(bitbake virtual/kernel -e | grep ^STAGING_KERNEL_BUILDDIR=)
 #
-#WORKDIR="/opt/alcz11702218/works/fslbsp/build/tmp/work/imx8qxp_kamuro-poky-linux/linux-imx/4.9.51-r5"
+#WORKDIR="/opt/xxxxx/works/fslbsp/build/tmp/work/imx8qxp_xxxx-poky-linux/linux-imx/4.9.51-r5"
 #/build/.config
 #or
-#STAGING_KERNEL_BUILDDIR="/opt/alcz11702218/works/fslbsp/build/tmp/work-shared/imx8qxp-kamuro/kernel-build-artifacts"
+#STAGING_KERNEL_BUILDDIR="/opt//works/fslbsp/build/tmp/work-shared/imx8qxp-xxxxx/kernel-build-artifacts"
 #.config
 
 }
@@ -71,6 +148,7 @@ file-hashes () {
     local _base_searchpath=$2
     local _filehasheslog=$3
 
+    #ignored_fls=( "/pyshtables.py" )
     
     git_links_list=( $(find -H "${_gitdatadir}" -type l -not -path "*/.git/*" ) )
     git_all_flist=( $(find -H "${_gitdatadir}" -type f -not -path "*/.git/*") ${git_links_list[@]} )
@@ -79,6 +157,11 @@ file-hashes () {
     echo -e "  >${_gitdatadir}"
     echo -e "  {GIT_FILES_HASH:" >>"${_filehasheslog}"
     for fle in ${git_all_slist[@]}; do
+    
+        spath="${fle#"${_base_searchpath}/"}"
+        [[ "${spath}" == *".pyc" ]] && continue
+        [[ "${spath}" == *"/pyshtables.py" ]] && continue
+    
         link=0
         for lnkfle in ${git_links_list[@]}; do 
             if [ "${fle}" == "${lnkfle}" ]; then
@@ -92,8 +175,7 @@ file-hashes () {
         else
             sha1=$(git hash-object "${fle}")
         fi
-
-        spath="${fle#"${_base_searchpath}/"}"
+ 
         echo -e "${sha1}, ${spath}" >>"${_filehasheslog}"
         
         #fls_list_path+=( "${fle}" )
@@ -136,18 +218,19 @@ git-probe() {
         commit_hash=$(git --git-dir="${gitdir}" show --format="%H" --no-patch)
         commit_date=$(git --git-dir="${gitdir}" show --format="%cI" --no-patch)
         tag_name=$(git --git-dir="${gitdir}" describe --tags --exact-match 2>/dev/null)
+        on_base_of_tag=$(git --git-dir="${gitdir}" describe --tags --dirty 2>/dev/null)
 
         if [ "${_get_branches}" == "yes" ]; then
             _TMPDIR=$(mktemp -d)
             branch_name=$( cd ${_TMPDIR}; git clone ${giturl}; bla="${giturl##*/}"; cd "${bla%%.git*}" ; bla=$(git name-rev --name-only "${commit_hash}"); echo "${bla##*/}"  )
             # git name-rev --name-only
-            printf '%s\n  %s\n  %s\n  %s\n  %s\n  %s\n\n' "GITDIR   :${sgitdir%/*}" "URL    :${giturl}" "Branch:${branch_name}" "TAG    :${tag_name}" "HASH   :${commit_hash}" "DATE   :${commit_date}" >>"${_logfle}"
+            printf '%s\n  %s\n  %s\n  %s\n  %s\n  %s\n\n' "GITDIR         :${sgitdir%/*}" "URL          :${giturl}" "Branch      :${branch_name}" "TAG          :${tag_name}" "HASH         :${commit_hash}" "DATE         :${commit_date}" >>"${_logfle}"
             rm -rf "${_TMPDIR}"
         else
             if [ "${_get_fullcheck}" == "yes" ]; then
-                printf '%s\n  %s\n  %s\n  %s\n  %s\n' "GITDIR :${sgitdir%/*}" "URL  :${giturl}" "TAG  :${tag_name}" "HASH :${commit_hash}" "DATE :${commit_date}" >>"${_logfle}"
+                printf '%s\n  %s\n  %s\n  %s\n  %s\n  %s\n' "GITDIR       :${sgitdir%/*}" "URL        :${giturl}" "ON-BASE-OF :${on_base_of_tag}" "TAG        :${tag_name}"  "HASH       :${commit_hash}" "DATE       :${commit_date}" >>"${_logfle}"
             else
-                printf '%s\n  %s\n  %s\n  %s\n  %s\n\n' "GITDIR :${sgitdir%/*}" "URL  :${giturl}" "TAG  :${tag_name}" "HASH :${commit_hash}" "DATE :${commit_date}" >>"${_logfle}"
+                printf '%s\n  %s\n  %s\n  %s\n  %s\n  %s\n\n' "GITDIR       :${sgitdir%/*}" "URL        :${giturl}" "ON-BASE-OF :${on_base_of_tag}" "TAG        :${tag_name}"  "HASH       :${commit_hash}" "DATE       :${commit_date}" >>"${_logfle}"
             fi
         fi
 
@@ -248,7 +331,7 @@ echo -e "\
   and
   after all layers have been added to bblayers.conf
   and
-  configuration in local.conf for given build is in final state 
+  configuration in local.conf for build is in final state 
   and
   build of image file have finished.
 
@@ -265,7 +348,7 @@ echo -e "\
 
 
 #bitbake -s 0 ensure that we are in correct directory to get data from bitbake
-DEPENDENCIES_LIST=( "grep --help 0" "awk --help 0" "mkdir --help 0" "git --version 0" "find --help 0" "bitbake -s 0" \
+DEPENDENCIES_LIST=( "grep --help 0" "awk BEGIN{print} 0" "mkdir --help 0" "git --version 0" "find --help 0" "bitbake -s 0" \
                     "sort --help 0" "pwd -L 0" "bitbake-layers --help 0"  "printf bla 0" "sed --help 0" "mktemp --help 0" "sha1sum --help 0")
 
 main() {
@@ -304,7 +387,7 @@ main() {
     
     CURWD=$(pwd)
     
-    #Get-real bash path: only one link level redirection
+    #Get-real bash script path: only one link level redirection
     if [ -L "$0" ]; then
         move2link=$(dirname "$0")
         resolv_link=$(readlink "$0")    
@@ -326,7 +409,7 @@ main() {
     SEARCH_ROOT_DIR="$(cd "${BASHFILEDIR}/../.."; pwd -P)"
     if [ ! $? -eq "0" ]; then 
         echo -e "\n  ERROR: Unable enter yocto layers directory ! Exiting \n"
-        exit 1        
+        exit 2        
     fi
     
     #REPO_GIT_DIR
@@ -338,14 +421,14 @@ main() {
         REPO_GIT_DIR="${SEARCH_ROOT_DIR}/.repo/manifests/.git"
     else
         echo -e "\n  ERROR: Unable to find .repo directory ! Exiting \n"
-        exit 1
+        exit 3
     fi
     
     #access check
     REPO_GIT_DIR="$(cd "${REPO_GIT_DIR}"; pwd -P)"
     if [ ! $? -eq "0" ]; then 
         echo -e "\n  ERROR: Unable enter .repo directory ! Exiting \n"
-        exit 1        
+        exit 4        
     fi    
     
     
@@ -353,12 +436,12 @@ main() {
 
     if [ "${BASHFILEDIR##*/}" != "tools" ]; then
       echo -e "\n  ERROR: Wrong script dir ! Exiting \n"
-      exit 1
+      exit 5
     fi
 
     if [ ! -e "${SEARCH_ROOT_DIR}/poky/bitbake" ]; then
         echo -e "\n  ERROR: Different BSP Structure:  SEARCH_ROOT_DIR:-${SEARCH_ROOT_DIR}- ! Exiting \n"
-        exit 1
+        exit 6
     fi
 
     CUR_TIME=$(date +%Y-%m-%d,%H:%M:%S)
@@ -373,10 +456,25 @@ main() {
     ret_=$?
     if [ ! "${ret_}" -eq 0 ]; then
         echo -e "\n  ERROR: Command should be run from the same place as bitbake command ! Exiting \n"
-        exit 1
+        exit 7
     fi
     echo -e "\n" >>"${BSP_PROBE_LOG}"
 
+    
+    echo -e "  LAYERS-GIT-INCLUDE-CHECK:"
+    are-aktive-layers-part-of-git-dirs "${SEARCH_ROOT_DIR}" "${BSP_PROBE_LOG}"
+    ret_=$?
+    if [ ! "${ret_}" -eq 0 ]; then    
+        echo -e "  >ERROR: The ${laydir} is not part of any git repository."                                                   
+        echo -e "          This may mean that BSP assembly includes external layers(out ouf manifest assembly) without .git ."    
+        echo -e "          Nobody is able to identify final assembly."                                                 
+        echo -e "          Please add yocto-layers together with .git"    
+        echo -e "          Exiting"
+        exit 8
+    else
+        echo -e "  >OK"
+    fi
+    
     echo -e "  REPO-PROBE:"
     repo-probe "${REPO_GIT_DIR}" "${BSP_PROBE_LOG}"
 
